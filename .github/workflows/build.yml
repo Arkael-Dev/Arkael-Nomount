@@ -61,6 +61,7 @@ jobs:
           grep -rIn "modules/nomount" work || true
           cp -n LICENSE work/LICENSE || true
           cp NOTICE work/NOTICE
+          sh patch-id.sh work
           cd work
           zip -r9q ../Arkael-Nomount.zip .
           cd ..
