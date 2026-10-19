@@ -1,0 +1,94 @@
+name: Build Arkael-Nomount
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this upstream tag was already released"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      UPSTREAM: maxsteeel/nomount
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream release
+        id: up
+        run: |
+          set -euo pipefail
+          REL=$(gh api repos/$UPSTREAM/releases/latest)
+          TAG=$(jq -r .tag_name <<<"$REL")
+          URL=$(jq -r '[.assets[] | select(.name | endswith(".zip"))][0].browser_download_url // empty' <<<"$REL")
+          [ -n "$URL" ] || { echo "No .zip asset in upstream latest release"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" >/dev/null 2>&1 && [ "${{ inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Repack
+        if: steps.up.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ steps.up.outputs.url }}" -o upstream.zip
+          mkdir work && unzip -q upstream.zip -d work
+          P=work/module.prop
+          [ -f "$P" ] || { echo "module.prop not at zip root:"; find work -maxdepth 2; exit 1; }
+          sed -i -e '/^id=/d' -e '/^name=/d' -e '/^author=/d' -e '/^description=/d' -e '/^updateJson=/d' "$P"
+          sed -i -e '$a\' "$P"
+          {
+            echo "id=Arkael-Nomount"
+            echo "name=NoMount"
+            echo "author=Fork by @arqzey (original: maxsteeel)"
+            echo "description=This module is exclusively for Arkael kernel, which already includes the NoMount patch."
+            echo "updateJson=https://raw.githubusercontent.com/${{ github.repository }}/main/update.json"
+          } >> "$P"
+          grep -q '^metamodule=' "$P" || echo "WARNING: upstream module.prop has no metamodule= line"
+          echo "--- hardcoded upstream module paths (should be empty) ---"
+          grep -rIn "modules/nomount" work || true
+          cp -n LICENSE work/LICENSE || true
+          cp NOTICE work/NOTICE
+          cd work
+          zip -r9q ../Arkael-Nomount.zip .
+          cd ..
+          grep -E '^(version|versionCode)=' "$P"
+
+      - name: Publish release
+        if: steps.up.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.up.outputs.tag }}"
+          NOTES="Repack of maxsteeel/nomount $TAG for Arkael kernel. Upstream: https://github.com/maxsteeel/nomount/releases/tag/$TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" Arkael-Nomount.zip --clobber
+          else
+            gh release create "$TAG" Arkael-Nomount.zip --title "Arkael-Nomount $TAG" --notes "$NOTES"
+          fi
+
+      - name: Update update.json
+        if: steps.up.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.up.outputs.tag }}"
+          VER=$(grep '^version=' work/module.prop | head -1 | cut -d= -f2-)
+          VC=$(grep '^versionCode=' work/module.prop | head -1 | cut -d= -f2-)
+          ZIP="https://github.com/${{ github.repository }}/releases/latest/download/Arkael-Nomount.zip"
+          LOG="https://github.com/maxsteeel/nomount/releases/tag/$TAG"
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "%s",\n  "changelog": "%s"\n}\n' "$VER" "${VC:-0}" "$ZIP" "$LOG" > update.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update.json
+          git diff --cached --quiet || { git commit -m "update.json: $TAG"; git push; }

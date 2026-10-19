@@ -1,0 +1,3 @@
+Arkael-Nomount is a repackaged build of NoMount by maxsteeel (https://github.com/maxsteeel/nomount),
+licensed under GPL-3.0. Only module.prop is modified (id, name, author, description, updateJson).
+All original copyright notices remain with their respective authors.
